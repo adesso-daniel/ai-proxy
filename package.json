@@ -1,0 +1,25 @@
+{
+  "name": "model-proxy",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.app.json"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-node": "^5.5.4",
+    "@sveltejs/kit": "^2.64.0",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@types/node": "^25.9.2",
+    "svelte": "^5.56.3",
+    "svelte-check": "^4.6.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3"
+  },
+  "dependencies": {
+    "nanoid": "^5.1.11",
+    "undici": "^8.4.1"
+  }
+}
