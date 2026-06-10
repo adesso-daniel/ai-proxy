@@ -1,8 +1,6 @@
 import { requestStore } from '$lib/store.js';
 import { fetch } from 'undici';
 
-const TRUNCATE_SIZE = 4096;
-
 export async function handleProxyRequest(req: Request): Promise<Response> {
   const startTime = Date.now();
   const providerUrl = process.env.PROXY_PROVIDER_URL || "";
@@ -12,9 +10,13 @@ export async function handleProxyRequest(req: Request): Promise<Response> {
   const fullUrl = providerUrl + path;
 
   let responseBody: string | null = null;
+  let responseBodyBytes: number = 0;
+  let responseBuffer: ArrayBuffer | null = null;
   let requestBody: string | null = null;
   let error: string | null = null;
   let statusCode = 502;
+  let respHeaders: Record<string, string> = {};
+  let respStatusText = '';
 
   try {
     // Capture request body for logging
@@ -33,22 +35,18 @@ export async function handleProxyRequest(req: Request): Promise<Response> {
     });
 
     statusCode = response.status;
+    respStatusText = response.statusText;
 
-    // Capture response body
-    const respBuffer = await response.arrayBuffer();
-    responseBody = bufferToString(respBuffer);
-
-    // Create new response from the captured buffer
-    // Convert undici Headers to HeadersInit (spread as object)
-    const headersInit: Record<string, string> = {};
+    // Capture headers before consuming the body
+    respHeaders = {};
     for (const [key, value] of response.headers.entries()) {
-      headersInit[key] = value;
+      respHeaders[key] = value;
     }
-    return new Response(respBuffer, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: headersInit,
-    });
+
+    // Capture response body (raw buffer + string copy for logging)
+    responseBuffer = await response.arrayBuffer();
+    responseBodyBytes = responseBuffer.byteLength;
+    responseBody = bufferToString(responseBuffer);
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
     statusCode = 502;
@@ -56,9 +54,8 @@ export async function handleProxyRequest(req: Request): Promise<Response> {
 
   const duration = Date.now() - startTime;
   const requestSize = Buffer.byteLength(requestBody || '');
-  const responseSize = Buffer.byteLength(responseBody || '');
 
-  // Log to store (fire-and-forget)
+  // Log to store (fire-and-forget) — runs for both success and error
   requestStore.add({
     method: req.method,
     url: req.url,
@@ -67,12 +64,22 @@ export async function handleProxyRequest(req: Request): Promise<Response> {
     statusCode,
     duration: Math.round(duration * 10) / 10,
     requestSize,
-    responseSize,
+    responseSize: responseBodyBytes,
     requestBody,
     responseBody,
     error,
   });
 
+  // Return appropriate response to the client
+  if (!error && responseBuffer !== null) {
+    return new Response(responseBuffer, {
+      status: statusCode,
+      statusText: respStatusText,
+      headers: respHeaders,
+    });
+  }
+
+  // Error case — return JSON error
   return new Response(JSON.stringify({ error }), {
     status: 502,
     headers: { 'content-type': 'application/json' },
