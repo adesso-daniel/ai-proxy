@@ -3,21 +3,28 @@ import { customAlphabet } from 'nanoid';
 
 const nanoid = customAlphabet('1234567890abcdef', 12);
 
-const TRUNCATE_SIZE = 4096;
 const MAX_SIZE = 1000;
+
+type StartParams = Omit<RequestLog, 'id' | 'timestamp' | 'status' | 'responseBody' | 'responseSize' | 'statusCode' | 'duration' | 'error'>;
+type FinishParams = Pick<RequestLog, 'statusCode' | 'duration' | 'responseSize' | 'responseBody' | 'error'>;
 
 class RequestStore {
   private entries: Map<string, RequestLog> = new Map();
 
-  add(log: Omit<RequestLog, 'id' | 'timestamp'>): RequestLog {
+  start(params: StartParams): RequestLog {
     const id = nanoid();
     const timestamp = Date.now();
     const entry: RequestLog = {
       id,
       timestamp,
-      ...log,
-      requestBody: log.requestBody ? truncate(log.requestBody, TRUNCATE_SIZE) : null,
-      responseBody: log.responseBody ? truncate(log.responseBody, TRUNCATE_SIZE) : null,
+      ...params,
+      requestBody: params.requestBody,
+      responseBody: null,
+      statusCode: undefined,
+      duration: undefined,
+      responseSize: undefined,
+      error: null,
+      status: 'pending',
     };
     this.entries.set(id, entry);
 
@@ -32,6 +39,22 @@ class RequestStore {
     return entry;
   }
 
+  finish(id: string, params: FinishParams): void {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+
+    if (params.error) {
+      entry.status = 'error';
+    } else {
+      entry.status = 'completed';
+    }
+    entry.statusCode = params.statusCode;
+    entry.duration = params.duration;
+    entry.responseSize = params.responseSize;
+    entry.responseBody = params.responseBody;
+    entry.error = params.error;
+  }
+
   getAll(): RequestLog[] {
     return Array.from(this.entries.values())
       .sort((a, b) => b.timestamp - a.timestamp);
@@ -40,11 +63,6 @@ class RequestStore {
   getById(id: string): RequestLog | undefined {
     return this.entries.get(id);
   }
-}
-
-function truncate(str: string, maxLen: number): string {
-  if (str.length <= maxLen) return str;
-  return str.slice(0, maxLen) + `\n... (truncated, ${str.length} chars total)`;
 }
 
 export const requestStore = new RequestStore();

@@ -5,16 +5,21 @@ export interface RequestLog {
   url: string;
   path: string;
   providerUrl: string;
-  statusCode: number;
-  duration: number;
+  statusCode?: number;
+  duration?: number;
   requestSize: number;
-  responseSize: number;
+  responseSize?: number;
   requestBody: string | null;
   responseBody: string | null;
   error: string | null;
+  status: 'pending' | 'completed' | 'error';
 }
 
-export interface RequestLogCompact extends Omit<RequestLog, 'requestBody' | 'responseBody'> {
+export interface RequestLogCompact
+  extends Omit<RequestLog, 'requestBody' | 'responseBody' | 'statusCode' | 'duration' | 'responseSize'> {
   requestBody: string | null;
   responseBody: string | null;
+  statusCode?: number;
+  duration?: number;
+  responseSize?: number;
 }

@@ -22,6 +22,7 @@ export function GET() {
       requestBody: log.requestBody,
       responseBody: log.responseBody,
       error: log.error,
+      status: log.status,
     })),
   );
 }
