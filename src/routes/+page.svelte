@@ -9,18 +9,85 @@
 	let pollingInterval: ReturnType<typeof setInterval>;
 	let bodyModal = $state<{
 		type: "requestBody" | "responseBody";
-		content: string;
+		content: Array<
+			| { type: "json"; html: string }
+			| { type: "reasoning"; content: string }
+		>;
 		title: string;
+		objectCount?: number;
+		parseErrors?: number;
 	} | null>(null);
 
 	function openBodyModal(
 		type: "requestBody" | "responseBody",
 		title: string,
 	) {
-		const content = selectedLog?.[type];
-		console.log([type, selectedLog, content]);
-		if (content) {
-			bodyModal = { type, content, title };
+		if (type === "responseBody") {
+			const log = selectedLog;
+			if (!log) return;
+			const reasoning = log.responseReasoning;
+			const rawBody = log.responseBody;
+			if (!reasoning && !rawBody) return;
+
+			const modalContent: Array<
+				| { type: "json"; html: string }
+				| { type: "reasoning"; content: string }
+			> = [];
+			let parseErrors = 0;
+
+			if (reasoning) {
+				modalContent.push({ type: "reasoning", content: reasoning });
+			}
+
+			// Extract non-reasoning JSON chunks from the raw body
+			if (rawBody) {
+				const objects = extractJsonObjects(rawBody);
+				for (const obj of objects) {
+					// Skip objects that have (reasoning_)content — they're already in the reasoning block
+					if (obj.choices && Array.isArray(obj.choices)) {
+						let hasReasoning = false;
+						for (const choice of obj.choices) {
+							if (
+								choice.delta?.reasoning_content ||
+								choice.delta?.content
+							) {
+								hasReasoning = true;
+								break;
+							}
+						}
+						if (hasReasoning) continue;
+					}
+					try {
+						modalContent.push({
+							type: "json",
+							html: prettyPrintJson.toHtml(obj),
+						});
+					} catch {
+						parseErrors++;
+					}
+				}
+			}
+
+			if (modalContent.length > 0) {
+				bodyModal = {
+					type,
+					content: modalContent,
+					title,
+					objectCount: modalContent.length,
+					parseErrors,
+				};
+			}
+		} else {
+			const content = selectedLog?.[type];
+			if (!content) return;
+			const html = prettyPrintJson.toHtml(JSON.parse(content));
+			bodyModal = {
+				type,
+				content: [{ type: "json" as const, html }],
+				title,
+				objectCount: 1,
+				parseErrors: 0,
+			};
 		}
 	}
 
@@ -56,9 +123,149 @@
 
 	function statusBadgeColor(status: string): string {
 		if (status === "pending") return "#eab308";
+		if (status === "streaming") return "#f59e0b";
 		if (status === "completed") return "#22c55e";
 		if (status === "error") return "#ef4444";
 		return "#6b7280";
+	}
+
+	function parseResponseBody(raw: string): {
+		objects: string[];
+		errors: number;
+	} {
+		const objects: string[] = [];
+		let errors = 0;
+
+		// Try parsing the whole thing first (single JSON object)
+		try {
+			const parsed = JSON.parse(raw);
+			objects.push(prettyPrintJson.toHtml(parsed));
+			return { objects, errors };
+		} catch {
+			// Not a single valid JSON — try multiple strategies
+			const extracted = extractJsonObjects(raw);
+			if (extracted.length > 0) {
+				for (const obj of extracted) {
+					try {
+						objects.push(prettyPrintJson.toHtml(obj));
+					} catch {
+						errors++;
+					}
+				}
+			} else {
+				// If no objects extracted, count non-empty lines as parse errors
+				errors = raw.split("\n").filter((l) => l.trim()).length;
+			}
+		}
+		return { objects, errors };
+	}
+
+	/**
+	 * Extract JSON objects from raw streaming response text.
+	 * Handles multiple formats: SSE, newline-separated, concatenated, mixed.
+	 */
+	function extractJsonObjects(raw: string): Record<string, unknown>[] {
+		const results: Record<string, unknown>[] = [];
+
+		// Strategy 1: Split by newlines, strip SSE prefix, parse each line
+		const lines = raw.split("\n");
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+
+			// Skip SSE sentinel values
+			if (trimmed === "[DONE]" || trimmed === "data: [DONE]") continue;
+
+			// Strip SSE "data: " prefix (handles both "data: {" and "data: ")
+			const jsonLine = trimmed.replace(/^data:\s*/, "");
+			if (!jsonLine) continue;
+
+			try {
+				const parsed = JSON.parse(jsonLine);
+				results.push(parsed);
+				continue;
+			} catch {
+				// fall through to next strategy
+			}
+		}
+
+		// Strategy 2: If no objects found, try extracting JSON objects using brace matching
+		// This handles concatenated JSON like {"id":"1"}{"id":"2"}
+		if (results.length === 0) {
+			const extracted = extractByBraces(raw);
+			if (extracted.length > 0) {
+				return extracted;
+			}
+		}
+
+		return results;
+	}
+
+	/**
+	 * Extract JSON objects from concatenated text using brace matching.
+	 * Handles: {"id":"1"}{"id":"2"} or SSE payloads embedded in text.
+	 */
+	function extractByBraces(raw: string): Record<string, unknown>[] {
+		const results: Record<string, unknown>[] = [];
+		let depth = 0;
+		let start = -1;
+		let inString = false;
+		let escapeNext = false;
+
+		for (let i = 0; i < raw.length; i++) {
+			const ch = raw[i];
+
+			if (escapeNext) {
+				escapeNext = false;
+				continue;
+			}
+
+			if (ch === "\\" && inString) {
+				escapeNext = true;
+				continue;
+			}
+
+			if (ch === '"') {
+				inString = !inString;
+				continue;
+			}
+
+			if (inString) continue;
+
+			if (ch === "{" && depth === 0) {
+				start = i;
+			}
+			if (ch === "{") depth++;
+			if (ch === "}") depth--;
+
+			if (depth === 0 && start !== -1) {
+				const slice = raw.slice(start, i + 1);
+				try {
+					results.push(JSON.parse(slice));
+				} catch {
+					// Not valid JSON at this boundary, reset
+				}
+				start = -1;
+			}
+		}
+
+		return results;
+	}
+
+	function copyBodyContent(
+		content:
+			| string
+			| Array<
+					| { type: "json"; html: string }
+					| { type: "reasoning"; content: string }
+		  >,
+	): string {
+		if (Array.isArray(content)) {
+			return content
+				.map((c) => (c.type === "reasoning" ? c.content : c.html))
+				.join("\n");
+		}
+		return content;
 	}
 
 	async function fetchLogs() {
@@ -108,7 +315,8 @@
 			<div
 				class="log-card"
 				class:expanded={selectedLog?.id === log.id}
-				class:pending={log.status === "pending"}
+				class:pending={log.status === "pending" ||
+					log.status === "streaming"}
 			>
 				<div
 					role="button"
@@ -127,6 +335,12 @@
 							style="color: {statusBadgeColor(log.status)}"
 							>pending</span
 						>
+					{:else if log.status === "streaming"}
+						<span
+							class="status streaming-status"
+							style="color: {statusBadgeColor(log.status)}"
+							>streaming…</span
+						>
 					{:else}
 						<span
 							class="status"
@@ -135,7 +349,7 @@
 						>
 					{/if}
 					<span class="duration"
-						>{log.status === "pending"
+						>{log.status === "pending" || log.status === "streaming"
 							? "…"
 							: formatDuration(log.duration)}</span
 					>
@@ -157,6 +371,11 @@
 						{#if log.status === "pending"}
 							<p class="pending-msg">
 								<strong>Status:</strong> Waiting for response…
+							</p>
+						{:else if log.status === "streaming"}
+							<p class="streaming-msg">
+								<strong>Status:</strong> Streaming… ({log
+									.responseBody?.length ?? 0} bytes received)
 							</p>
 						{/if}
 						{#if log.error}
@@ -234,6 +453,11 @@
 							>
 								<div class="section-header">
 									<strong>Response Body</strong>
+									{#if log.status === "streaming"}
+										<span class="streaming-indicator"
+											>⟳</span
+										>
+									{/if}
 									<a
 										class="expand-icon"
 										href="#bodyModal"
@@ -256,6 +480,11 @@
 											? "..."
 											: ""}</span
 									>
+									{#if log.status === "streaming"}
+										<span class="streaming-chunks"
+											>⟳ streaming</span
+										>
+									{/if}
 								</div>
 							</div>
 						{/if}
@@ -269,13 +498,24 @@
 				<div class="modal">
 					<div class="modal-header">
 						<h2>{bodyModal.title}</h2>
+						{#if bodyModal.objectCount || 0 > 1}
+							<span class="modal-subtitle">
+								{bodyModal.objectCount} chunks
+								{#if bodyModal.parseErrors || 0 > 0}
+									— {bodyModal.parseErrors} parse error{bodyModal.parseErrors !==
+									1
+										? "s"
+										: ""}
+								{/if}
+							</span>
+						{/if}
 						<div class="modal-actions">
 							<button
 								class="copy-btn"
 								onclick={(e) => {
 									e.stopPropagation();
 									navigator.clipboard.writeText(
-										bodyModal!.content,
+										copyBodyContent(bodyModal!.content),
 									);
 									const btn = e.currentTarget;
 									btn.textContent = "Copied!";
@@ -291,12 +531,53 @@
 						</div>
 					</div>
 					<div class="modal-body">
-						<div class="modal-content">
-							<pre
-								class="json-container">{@html prettyPrintJson.toHtml(
-									JSON.parse(bodyModal.content),
-								)}</pre>
-						</div>
+						{#if Array.isArray(bodyModal.content)}
+							<!-- Chunked modal: show reasoning and JSON chunks interleaved -->
+							{#each bodyModal.content as chunk, i}
+								{#if chunk.type === "reasoning"}
+									<div class="reasoning-container">
+										<div class="reasoning-header">
+											Reasoning
+										</div>
+										<pre
+											class="reasoning-content">{chunk.content}</pre>
+									</div>
+								{:else}
+									<div class="modal-chunk">
+										<div class="chunk-header">
+											<span class="chunk-index"
+												>Chunk {i + 1}</span
+											>
+											{#if i < bodyModal.content.length - 1}
+												<div
+													class="chunk-separator"
+												></div>
+											{/if}
+										</div>
+										<pre
+											class="json-container chunk-content">{@html chunk.html}
+										</pre>
+									</div>
+								{/if}
+							{/each}
+							{#if bodyModal.parseErrors || 0 > 0}
+								<p class="parse-error">
+									⚠ {bodyModal.parseErrors} line{bodyModal.parseErrors !==
+									1
+										? "s"
+										: ""} couldn't be parsed as JSON
+								</p>
+							{/if}
+							{#if bodyModal.content.length === 0}
+								<p class="empty-body">No body content</p>
+							{/if}
+						{:else}
+							<!-- Single object modal -->
+							<div class="modal-content">
+								<pre
+									class="json-container">{@html bodyModal.content}</pre>
+							</div>
+						{/if}
 					</div>
 				</div>
 			</div>
@@ -559,6 +840,29 @@
 		word-break: break-word;
 	}
 
+	/* Streaming indicator styles */
+	.streaming-indicator {
+		font-size: 14px;
+		color: #f59e0b;
+		animation: spin 1s linear infinite;
+	}
+
+	@keyframes spin {
+		from {
+			transform: rotate(0deg);
+		}
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	.streaming-chunks {
+		color: #f59e0b;
+		font-weight: 600;
+		font-size: 11px;
+		animation: pending-pulse 1.5s ease-in-out infinite;
+	}
+
 	/* Modal styles */
 	.modal-overlay {
 		position: fixed;
@@ -617,6 +921,12 @@
 		font-weight: 600;
 	}
 
+	.modal-subtitle {
+		font-size: 12px;
+		color: #6b7280;
+		font-weight: 400;
+	}
+
 	.modal-actions {
 		display: flex;
 		gap: 8px;
@@ -655,6 +965,94 @@
 		line-height: 1.6;
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+
+	/* Reasoning modal styles */
+	.reasoning-container {
+		margin-bottom: 16px;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+		overflow: hidden;
+		background: #f0f9ff;
+	}
+
+	.reasoning-header {
+		font-size: 11px;
+		font-weight: 600;
+		color: #0369a1;
+		text-transform: uppercase;
+		padding: 8px 12px;
+		background: #e0f2fe;
+		border-bottom: 1px solid #bae6fd;
+	}
+
+	.reasoning-content {
+		margin: 0 !important;
+		border-radius: 0 !important;
+		background: #f0f9ff !important;
+		color: #0c4a6e !important;
+		padding: 12px !important;
+		max-height: 400px !important;
+		white-space: pre-wrap;
+		word-break: break-word;
+		font-size: 13px !important;
+		line-height: 1.5 !important;
+	}
+
+	/* Multi-chunk modal styles */
+	.modal-chunk {
+		margin-bottom: 16px;
+		border: 1px solid #e5e7eb;
+		border-radius: 8px;
+		overflow: hidden;
+	}
+
+	.chunk-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 8px 12px;
+		background: #f9fafb;
+		border-bottom: 1px solid #e5e7eb;
+	}
+
+	.chunk-index {
+		font-size: 11px;
+		font-weight: 600;
+		color: #6366f1;
+		text-transform: uppercase;
+	}
+
+	.chunk-separator {
+		height: 4px;
+		width: 24px;
+		background: #e5e7eb;
+		border-radius: 2px;
+	}
+
+	.chunk-content {
+		margin: 0 !important;
+		border-radius: 0 !important;
+	}
+
+	.parse-error {
+		margin-top: 12px;
+		padding: 8px 12px;
+		background: #fef3c7;
+		border: 1px solid #fbbf24;
+		border-radius: 6px;
+		font-size: 12px;
+		color: #92400e;
+	}
+
+	.empty-body {
+		margin-top: 12px;
+		padding: 12px;
+		background: #f3f4f6;
+		border-radius: 6px;
+		font-size: 13px;
+		color: #6b7280;
+		text-align: center;
 	}
 
 	:global {

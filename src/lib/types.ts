@@ -11,14 +11,16 @@ export interface RequestLog {
   responseSize?: number;
   requestBody: string | null;
   responseBody: string | null;
+  responseReasoning: string | null;
   error: string | null;
-  status: 'pending' | 'completed' | 'error';
+  status: 'pending' | 'streaming' | 'completed' | 'error';
 }
 
 export interface RequestLogCompact
   extends Omit<RequestLog, 'requestBody' | 'responseBody' | 'statusCode' | 'duration' | 'responseSize'> {
   requestBody: string | null;
   responseBody: string | null;
+  responseReasoning: string | null;
   statusCode?: number;
   duration?: number;
   responseSize?: number;

@@ -5,8 +5,8 @@ const nanoid = customAlphabet('1234567890abcdef', 12);
 
 const MAX_SIZE = 1000;
 
-type StartParams = Omit<RequestLog, 'id' | 'timestamp' | 'status' | 'responseBody' | 'responseSize' | 'statusCode' | 'duration' | 'error'>;
-type FinishParams = Pick<RequestLog, 'statusCode' | 'duration' | 'responseSize' | 'responseBody' | 'error'>;
+type StartParams = Omit<RequestLog, 'id' | 'timestamp' | 'status' | 'responseBody' | 'responseSize' | 'responseReasoning' | 'statusCode' | 'duration' | 'error'>;
+type FinishParams = Pick<RequestLog, 'statusCode' | 'duration' | 'responseSize' | 'responseBody' | 'error'> & { responseReasoning?: string | null };
 
 class RequestStore {
   private entries: Map<string, RequestLog> = new Map();
@@ -20,6 +20,7 @@ class RequestStore {
       ...params,
       requestBody: params.requestBody,
       responseBody: null,
+      responseReasoning: null,
       statusCode: undefined,
       duration: undefined,
       responseSize: undefined,
@@ -39,6 +40,33 @@ class RequestStore {
     return entry;
   }
 
+  /**
+   * Push partial response body while streaming. Only works when status is 'pending' or 'streaming'.
+   * Appends body text to existing responseBody and transitions to 'streaming'.
+   * responseReasoning is set (not appended) — it contains the full display string.
+   */
+  updateResponse(
+    id: string,
+    params: { responseBody?: string; responseSize?: number; responseReasoning?: string },
+  ): void {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    if (entry.status !== 'pending' && entry.status !== 'streaming') return;
+
+    if (entry.status === 'pending') {
+      entry.status = 'streaming';
+    }
+    if (params.responseBody !== undefined) {
+      entry.responseBody = (entry.responseBody ?? '') + params.responseBody;
+    }
+    if (params.responseSize !== undefined) {
+      entry.responseSize = params.responseSize;
+    }
+    if (params.responseReasoning !== undefined) {
+      entry.responseReasoning = params.responseReasoning;
+    }
+  }
+
   finish(id: string, params: FinishParams): void {
     const entry = this.entries.get(id);
     if (!entry) return;
@@ -52,6 +80,7 @@ class RequestStore {
     entry.duration = params.duration;
     entry.responseSize = params.responseSize;
     entry.responseBody = params.responseBody;
+    entry.responseReasoning = params.responseReasoning ?? null;
     entry.error = params.error;
   }
 

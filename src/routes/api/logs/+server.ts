@@ -21,6 +21,7 @@ export function GET() {
       responseSize: log.responseSize,
       requestBody: log.requestBody,
       responseBody: log.responseBody,
+      responseReasoning: log.responseReasoning,
       error: log.error,
       status: log.status,
     })),
