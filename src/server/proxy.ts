@@ -1,5 +1,6 @@
 import { requestStore } from '$lib/store.js';
 import { fetch } from 'undici';
+import { prettyPrintJson } from 'pretty-print-json';
 
 export async function handleProxyRequest(req: Request): Promise<Response> {
   const startTime = Date.now();
@@ -68,10 +69,16 @@ export async function handleProxyRequest(req: Request): Promise<Response> {
   let totalBytes = 0;
   let readError: string | null = null;
 
-  // Accumulated raw text and incremental reasoning, updated in real-time as chunks arrive
+  // Accumulated raw text for delta tracking
   let accumulatedRaw = '';
+  // Per-chunk display entries for interleaved rendering (arrival order)
+  let displayEntries: Array<
+    | { type: 'json'; html: string }
+    | { type: 'reasoning'; content: string }
+  > = [];
   let reasoningAccum = '';
   let lastExtractedCount = 0;
+  let lastSentLength = 0;
 
   const bodyStream = response.body;
   if (!bodyStream) {
@@ -110,20 +117,55 @@ export async function handleProxyRequest(req: Request): Promise<Response> {
         accumulatedRaw = bufferFromChunks(chunks);
 
         // Extract only NEW JSON objects (not re-parsing previously seen ones)
-        const { reasoning: newReasoning } = parseNewObjects(accumulatedRaw, lastExtractedCount);
-        lastExtractedCount = extractJsonObjects(accumulatedRaw).length;
+        const allObjects = extractJsonObjects(accumulatedRaw);
+        const newObjects = allObjects.slice(lastExtractedCount);
+        lastExtractedCount = allObjects.length;
 
-        if (newReasoning) {
-          reasoningAccum += newReasoning;
+        // Build display entries for new objects in arrival order
+        const newDisplayEntries: Array<
+          | { type: 'json'; html: string }
+          | { type: 'reasoning'; content: string }
+        > = [];
+        for (const obj of newObjects) {
+          let reasoningText: string | undefined;
+          if (isRecord(obj) && 'choices' in obj && Array.isArray(obj.choices)) {
+            for (const choice of obj.choices) {
+              if (isRecord(choice) && choice.delta && isRecord(choice.delta)) {
+                const raw = choice.delta.reasoning_content || choice.delta.content;
+                if (typeof raw === 'string' && raw.length > 0) {
+                  reasoningText = raw;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (reasoningText) {
+            reasoningAccum += reasoningText;
+            newDisplayEntries.push({ type: 'reasoning', content: reasoningAccum });
+          } else {
+            try {
+              newDisplayEntries.push({ type: 'json', html: prettyPrintJson.toHtml(obj) });
+            } catch {
+              // Ignore parse errors
+            }
+          }
         }
 
-        // Push partial body to the log in real-time
-        const partialBody = accumulatedRaw;
-        requestStore.updateResponse(logEntry.id, {
-          responseBody: partialBody,
-          responseReasoning: reasoningAccum,
-          responseSize: totalBytes,
-        });
+        // Append new display entries to the main array
+        displayEntries.push(...newDisplayEntries);
+
+        // Push body delta (not the full accumulated text) and new display entries
+        const bodyDelta = accumulatedRaw.slice(lastSentLength);
+        lastSentLength = accumulatedRaw.length;
+
+        if (newDisplayEntries.length > 0 || bodyDelta) {
+          requestStore.updateResponse(logEntry.id, {
+            responseBody: bodyDelta,
+            responseDisplayEntries: newDisplayEntries,
+            responseSize: totalBytes,
+          });
+        }
       }
     } catch (err) {
       readError = err instanceof Error ? err.message : String(err);
@@ -137,6 +179,8 @@ export async function handleProxyRequest(req: Request): Promise<Response> {
         responseSize: totalBytes,
         responseBody: bufferFromChunks(chunks),
         responseReasoning: reasoningAccum || null,
+        responseDisplayEntries: displayEntries,
+        hasDisplayEntries: displayEntries.length > 0,
         error: readError,
       });
     },
@@ -148,6 +192,8 @@ export async function handleProxyRequest(req: Request): Promise<Response> {
         responseSize: totalBytes,
         responseBody: bufferFromChunks(chunks),
         responseReasoning: reasoningAccum || null,
+        responseDisplayEntries: displayEntries,
+        hasDisplayEntries: displayEntries.length > 0,
         error: msg,
       });
     },
@@ -179,35 +225,6 @@ function bufferFromChunks(chunks: Uint8Array[]): string {
     offset += chunk.length;
   }
   return bufferToString(combined.buffer);
-}
-
-/**
- * Parse only NEW JSON objects (from startIdx onward) and extract reasoning content.
- * Returns concatenated reasoning text from the new objects.
- */
-function parseNewObjects(raw: string, startIdx: number): { reasoning: string } {
-  const extracted = extractJsonObjects(raw);
-  const reasoningParts: string[] = [];
-
-  // Process only new objects (starting from startIdx)
-  for (let i = startIdx; i < extracted.length; i++) {
-    const obj = extracted[i];
-
-    if (isRecord(obj) && 'choices' in obj && Array.isArray(obj.choices)) {
-      // Extract (reasoning_)content from OpenAI-compatible streaming responses
-      for (const choice of obj.choices) {
-        if (isRecord(choice) && choice.delta && isRecord(choice.delta)) {
-          const reasoning = choice.delta.reasoning_content || choice.delta.content;
-          if (typeof reasoning === 'string' && reasoning.trim()) {
-            reasoningParts.push(reasoning);
-            break; // Found reasoning in this object, move to next object
-          }
-        }
-      }
-    }
-  }
-
-  return { reasoning: reasoningParts.join('\n\n') };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

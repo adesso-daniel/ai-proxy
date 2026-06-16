@@ -3,31 +3,80 @@
 	import { prettyPrintJson } from "pretty-print-json";
 
 	let logs = $state<RequestLog[]>([]);
-	let selectedLog = $state<RequestLog | null>(null);
+	let selectedLogId = $state<string | null>(null);
+	let selectedLog = $derived(
+		selectedLogId ? logs.find((l) => l.id === selectedLogId) ?? null : null
+	);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let pollingInterval: ReturnType<typeof setInterval>;
-	let bodyModal = $state<{
+	let modalType = $state<"requestBody" | "responseBody" | null>(null);
+
+	type DisplayContent =
+		| { type: "json"; html: string }
+		| { type: "reasoning"; content: string };
+
+	/**
+	 * Consolidate consecutive reasoning entries into one each.
+	 * Keeps only the last entry in each consecutive run (most complete accumulated text).
+	 */
+	function consolidateReasoningEntries(
+		content: DisplayContent[],
+	): DisplayContent[] {
+		const result: DisplayContent[] = [];
+		let lastReasoning: DisplayContent | null = null;
+		for (const item of content) {
+			if (item.type === "reasoning") {
+				lastReasoning = item;
+			} else {
+				if (lastReasoning) {
+					result.push(lastReasoning);
+					lastReasoning = null;
+				}
+				result.push(item);
+			}
+		}
+		if (lastReasoning) result.push(lastReasoning);
+		return result;
+	}
+
+	type ModalContent = {
 		type: "requestBody" | "responseBody";
 		content: Array<
 			| { type: "json"; html: string }
 			| { type: "reasoning"; content: string }
 		>;
 		title: string;
-		objectCount?: number;
-		parseErrors?: number;
-	} | null>(null);
+		objectCount: number;
+		parseErrors: number;
+	};
 
-	function openBodyModal(
+	/**
+	 * Build modal content from a log entry and a modal type.
+	 * Extracted from openBodyModal to be used by the computed bodyModal.
+	 */
+	function buildModalContent(
 		type: "requestBody" | "responseBody",
+		log: RequestLog,
 		title: string,
-	) {
+	): ModalContent | null {
 		if (type === "responseBody") {
-			const log = selectedLog;
-			if (!log) return;
+			// Use pre-built display entries if available (already in arrival order)
+			if (log.hasDisplayEntries && log.responseDisplayEntries && log.responseDisplayEntries.length > 0) {
+				const consolidated = consolidateReasoningEntries(log.responseDisplayEntries);
+				return {
+					type,
+					content: consolidated,
+					title,
+					objectCount: consolidated.length,
+					parseErrors: 0,
+				};
+			}
+
+			// Fallback: reconstruct from raw body + reasoning (legacy or non-structured responses)
 			const reasoning = log.responseReasoning;
 			const rawBody = log.responseBody;
-			if (!reasoning && !rawBody) return;
+			if (!reasoning && !rawBody) return null;
 
 			const modalContent: Array<
 				| { type: "json"; html: string }
@@ -68,20 +117,21 @@
 				}
 			}
 
-			if (modalContent.length > 0) {
-				bodyModal = {
-					type,
-					content: modalContent,
-					title,
-					objectCount: modalContent.length,
-					parseErrors,
-				};
-			}
+			if (modalContent.length === 0) return null;
+
+			const consolidated = consolidateReasoningEntries(modalContent);
+			return {
+				type,
+				content: consolidated,
+				title,
+				objectCount: consolidated.length,
+				parseErrors,
+			};
 		} else {
-			const content = selectedLog?.[type];
-			if (!content) return;
+			const content = log[type];
+			if (!content) return null;
 			const html = prettyPrintJson.toHtml(JSON.parse(content));
-			bodyModal = {
+			return {
 				type,
 				content: [{ type: "json" as const, html }],
 				title,
@@ -89,6 +139,23 @@
 				parseErrors: 0,
 			};
 		}
+	}
+
+	let bodyModal = $derived(
+		modalType !== null && selectedLog
+			? buildModalContent(
+					modalType,
+					selectedLog,
+					modalType === "responseBody" ? "Response Body" : "Request Body",
+			  )
+			: null
+	);
+
+	function openBodyModal(
+		type: "requestBody" | "responseBody",
+		title: string,
+	) {
+		modalType = type;
 	}
 
 	function formatTime(ts: number): string {
@@ -282,7 +349,7 @@
 	}
 
 	function expandLog(log: RequestLog) {
-		selectedLog = selectedLog?.id === log.id ? null : log;
+		selectedLogId = selectedLogId === log.id ? null : log.id;
 	}
 
 	$effect(() => {
@@ -526,7 +593,7 @@
 							>
 							<button
 								class="close-btn"
-								onclick={() => (bodyModal = null)}>×</button
+								onclick={() => (modalType = null)}>×</button
 							>
 						</div>
 					</div>

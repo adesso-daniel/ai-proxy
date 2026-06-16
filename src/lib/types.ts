@@ -12,15 +12,21 @@ export interface RequestLog {
   requestBody: string | null;
   responseBody: string | null;
   responseReasoning: string | null;
+  responseDisplayEntries?: Array<
+    | { type: 'json'; html: string }
+    | { type: 'reasoning'; content: string }
+  >;
+  hasDisplayEntries: boolean;
   error: string | null;
   status: 'pending' | 'streaming' | 'completed' | 'error';
 }
 
 export interface RequestLogCompact
-  extends Omit<RequestLog, 'requestBody' | 'responseBody' | 'statusCode' | 'duration' | 'responseSize'> {
+  extends Omit<RequestLog, 'requestBody' | 'responseBody' | 'statusCode' | 'duration' | 'responseSize' | 'responseDisplayEntries' | 'hasDisplayEntries'> {
   requestBody: string | null;
   responseBody: string | null;
   responseReasoning: string | null;
+  hasDisplayEntries: boolean;
   statusCode?: number;
   duration?: number;
   responseSize?: number;

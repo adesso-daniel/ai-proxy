@@ -5,8 +5,8 @@ const nanoid = customAlphabet('1234567890abcdef', 12);
 
 const MAX_SIZE = 1000;
 
-type StartParams = Omit<RequestLog, 'id' | 'timestamp' | 'status' | 'responseBody' | 'responseSize' | 'responseReasoning' | 'statusCode' | 'duration' | 'error'>;
-type FinishParams = Pick<RequestLog, 'statusCode' | 'duration' | 'responseSize' | 'responseBody' | 'error'> & { responseReasoning?: string | null };
+type StartParams = Omit<RequestLog, 'id' | 'timestamp' | 'status' | 'responseBody' | 'responseSize' | 'responseReasoning' | 'responseDisplayEntries' | 'hasDisplayEntries' | 'statusCode' | 'duration' | 'error'>;
+type FinishParams = Pick<RequestLog, 'statusCode' | 'duration' | 'responseSize' | 'responseBody' | 'error'> & { responseReasoning?: string | null; responseDisplayEntries?: RequestLog['responseDisplayEntries']; hasDisplayEntries?: boolean };
 
 class RequestStore {
   private entries: Map<string, RequestLog> = new Map();
@@ -21,6 +21,8 @@ class RequestStore {
       requestBody: params.requestBody,
       responseBody: null,
       responseReasoning: null,
+      responseDisplayEntries: undefined,
+      hasDisplayEntries: false,
       statusCode: undefined,
       duration: undefined,
       responseSize: undefined,
@@ -42,12 +44,16 @@ class RequestStore {
 
   /**
    * Push partial response body while streaming. Only works when status is 'pending' or 'streaming'.
-   * Appends body text to existing responseBody and transitions to 'streaming'.
-   * responseReasoning is set (not appended) — it contains the full display string.
+   * Appends body delta and display entries to the log. Transitions to 'streaming'.
    */
   updateResponse(
     id: string,
-    params: { responseBody?: string; responseSize?: number; responseReasoning?: string },
+    params: {
+      responseBody?: string;
+      responseSize?: number;
+      responseReasoning?: string;
+      responseDisplayEntries?: RequestLog['responseDisplayEntries'];
+    },
   ): void {
     const entry = this.entries.get(id);
     if (!entry) return;
@@ -65,6 +71,10 @@ class RequestStore {
     if (params.responseReasoning !== undefined) {
       entry.responseReasoning = params.responseReasoning;
     }
+    if (params.responseDisplayEntries && params.responseDisplayEntries.length > 0) {
+      entry.responseDisplayEntries = [...(entry.responseDisplayEntries ?? []), ...params.responseDisplayEntries];
+      entry.hasDisplayEntries = true;
+    }
   }
 
   finish(id: string, params: FinishParams): void {
@@ -81,6 +91,10 @@ class RequestStore {
     entry.responseSize = params.responseSize;
     entry.responseBody = params.responseBody;
     entry.responseReasoning = params.responseReasoning ?? null;
+    if (params.responseDisplayEntries && params.responseDisplayEntries.length > 0) {
+      entry.responseDisplayEntries = params.responseDisplayEntries;
+      entry.hasDisplayEntries = true;
+    }
     entry.error = params.error;
   }
 
