@@ -3,7 +3,7 @@ import { customAlphabet } from 'nanoid';
 
 const nanoid = customAlphabet('1234567890abcdef', 12);
 
-const MAX_SIZE = 1000;
+const MAX_SIZE = 50;
 
 type StartParams = Omit<RequestLog, 'id' | 'timestamp' | 'status' | 'responseBody' | 'responseSize' | 'responseReasoning' | 'responseDisplayEntries' | 'hasDisplayEntries' | 'statusCode' | 'duration' | 'error'>;
 type FinishParams = Pick<RequestLog, 'statusCode' | 'duration' | 'responseSize' | 'responseBody' | 'error'> & { responseReasoning?: string | null; responseDisplayEntries?: RequestLog['responseDisplayEntries']; hasDisplayEntries?: boolean };
